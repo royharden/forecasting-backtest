@@ -1,0 +1,6 @@
+# Function settings for later Bolt provisioning. This file does not start a stack.
+
+project_id = "forecasting-backtest"
+
+[functions.forecast]
+verify_jwt = true
