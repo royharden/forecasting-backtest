@@ -7,7 +7,7 @@
  * so changing them cannot change a serialized model request.
  */
 
-import { canonicalJson, hashCanonical } from "./canonical.ts";
+import { canonicalJson, hashCanonical, isStorableText } from "./canonical.ts";
 import type { PromptEvidence } from "./evidence.ts";
 import { GATE_VERSION, LIMITS, PROMPT_VERSION, type ModelArm } from "./manifest.ts";
 import { parseUtc } from "./time.ts";
@@ -250,15 +250,19 @@ export function readProviderResponse(body: unknown): ProviderReading {
   if ((Array.isArray(toolCalls) && toolCalls.length > 0) || message.function_call != null) return { ok: false, code: "tool_call_response" };
   const content = message.content;
   if (typeof content !== "string" || content.trim() === "") return { ok: false, code: "empty_response" };
+  // U+0000 and lone surrogates cannot be stored in Postgres text/jsonb: an invalid response, not a write error.
+  if (!isStorableText(content)) return { ok: false, code: "response_schema_invalid" };
   const usage = (record.usage ?? {}) as Record<string, unknown>;
+  const tokens = (value: unknown) => (typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 10_000_000 ? value : null);
+  const requestId = typeof record.id === "string" && record.id.length <= 256 && isStorableText(record.id) ? record.id : null;
   return {
     ok: true,
     content,
     usage: {
-      promptTokens: typeof usage.prompt_tokens === "number" ? usage.prompt_tokens : null,
-      completionTokens: typeof usage.completion_tokens === "number" ? usage.completion_tokens : null,
+      promptTokens: tokens(usage.prompt_tokens),
+      completionTokens: tokens(usage.completion_tokens),
     },
-    providerRequestId: typeof record.id === "string" ? record.id : null,
+    providerRequestId: requestId,
   };
 }
 

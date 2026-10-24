@@ -67,6 +67,14 @@ export function utf8Length(text: string): number {
   return utf8Bytes(text).length;
 }
 
+/**
+ * True when Postgres text/jsonb can store the string: no U+0000 and no unpaired UTF-16 surrogate.
+ * Untrusted provider text that fails this is a schema failure, never a database write error.
+ */
+export function isStorableText(text: string): boolean {
+  return !/\u0000|[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(text);
+}
+
 /** SHA-256 of raw bytes, lowercase hex. */
 export function sha256Bytes(bytes: Uint8Array): string {
   const bitLength = bytes.length * 8;

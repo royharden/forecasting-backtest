@@ -217,6 +217,7 @@ export function App() {
                     busy={busy}
                     onCreate={(requestedN, seed) =>
                       void guarded(async () => {
+                        if (activeRun.execution.status !== "completed") throw new Error("Audit samples need a completed run; this run is partial or still processing.");
                         const sample =
                           activeRun.storedRunId != null
                             ? await createAuditSampleRemote(activeRun.storedRunId, dataset.version.versionHash, requestedN, seed, activeRun.execution)

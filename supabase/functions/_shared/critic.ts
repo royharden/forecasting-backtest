@@ -7,6 +7,7 @@
  * removed so a probability derived from them could still be scored.
  */
 
+import { isStorableText } from "./canonical.ts";
 import type { PromptEvidence, SourceDecision } from "./evidence.ts";
 import { LIMITS, type ModelArm } from "./manifest.ts";
 import type { StructuralCode, StructuralFeedback } from "./prompt.ts";
@@ -54,7 +55,7 @@ export function parseModelOutput(text: string, arm: ModelArm): { ok: true; value
   if (typeof probability !== "number" || !Number.isFinite(probability) || probability < 0 || probability > 1) {
     return { ok: false, code: "schema_invalid", detail: "probability must be a finite number in [0, 1]." };
   }
-  if (typeof record.rationale !== "string" || record.rationale.length > LIMITS.rationaleChars) {
+  if (typeof record.rationale !== "string" || record.rationale.length > LIMITS.rationaleChars || !isStorableText(record.rationale)) {
     return { ok: false, code: "schema_invalid", detail: `rationale must be a string of at most ${LIMITS.rationaleChars} characters.` };
   }
   if (!Array.isArray(record.claims) || record.claims.length > LIMITS.claimsMax) {
@@ -78,7 +79,7 @@ export function parseModelOutput(text: string, arm: ModelArm): { ok: true; value
     }
     // Bounds match the database checks so an oversized untrusted value is a recorded schema failure,
     // never a write error after a paid call.
-    if (c.text.length > CLAIM_TEXT_MAX || c.evidenceId.length > CLAIM_REF_MAX || c.contentHash.length > CLAIM_REF_MAX || !Number.isFinite(c.start) || !Number.isFinite(c.end)) {
+    if (c.text.length > CLAIM_TEXT_MAX || c.evidenceId.length > CLAIM_REF_MAX || c.contentHash.length > CLAIM_REF_MAX || !Number.isFinite(c.start) || !Number.isFinite(c.end) || ![c.text, c.evidenceId, c.contentHash].every(isStorableText)) {
       return { ok: false, code: "schema_invalid", detail: `Claim text must be <= ${CLAIM_TEXT_MAX} characters and references <= ${CLAIM_REF_MAX}.` };
     }
     claims.push({ text: c.text, evidenceId: c.evidenceId, start: c.start, end: c.end, contentHash: c.contentHash });

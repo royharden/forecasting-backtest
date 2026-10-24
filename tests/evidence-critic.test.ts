@@ -197,6 +197,12 @@ describe("critic", () => {
     expect(evaluateOutput(out([ref]), "research", gate.promptEvidence, gate.ledger, len)).toMatchObject({ status: "failed", code: "schema_invalid" });
   });
 
+  it("rejects text Postgres cannot store (escaped NUL, lone surrogates) as a recorded schema failure", () => {
+    expect(evaluateOutput('{"probability":0.4,"rationale":"a\\u0000b","claims":[]}', "no_research", [], [], len)).toMatchObject({ status: "failed", code: "schema_invalid" });
+    expect(evaluateOutput('{"probability":0.4,"rationale":"a\\ud800b","claims":[]}', "no_research", [], [], len)).toMatchObject({ status: "failed", code: "schema_invalid" });
+    expect(evaluateOutput('{"probability":0.4,"rationale":"ok 😀","claims":[]}', "no_research", [], [], len)).toMatchObject({ status: "valid" });
+  });
+
   it("rejects p outside [0,1] and nonfinite values instead of clamping", () => {
     expect(evaluateOutput(out([], 1.01), "no_research", [], [], len)).toMatchObject({ status: "failed" });
     expect(evaluateOutput('{"probability":"0.5","rationale":"","claims":[]}', "no_research", [], [], len)).toMatchObject({ status: "failed" });
@@ -273,6 +279,13 @@ describe("no-browsing guards and live eligibility", () => {
     expect(readProviderResponse({ choices: [{ finish_reason: "tool_calls", message: { content: "" } }] })).toMatchObject({ ok: false, code: "tool_call_response" });
     expect(readProviderResponse({ choices: [{ message: { content: "x", tool_calls: [{}] } }] })).toMatchObject({ ok: false, code: "tool_call_response" });
     expect(readProviderResponse({ ...content, citations: ["u"] })).toMatchObject({ ok: false, code: "tool_call_response" });
+    expect(readProviderResponse({ choices: [{ message: { content: "a\u0000b" } }] })).toMatchObject({ ok: false, code: "response_schema_invalid" });
+    expect(readProviderResponse({ choices: [{ message: { content: "a\ud800b" } }] })).toMatchObject({ ok: false, code: "response_schema_invalid" });
+    expect(readProviderResponse({ id: "x".repeat(300), usage: { prompt_tokens: -5, completion_tokens: 12 }, ...content })).toMatchObject({
+      ok: true,
+      providerRequestId: null,
+      usage: { promptTokens: null, completionTokens: 12 },
+    });
   });
 
   it("blocks unknown cutoffs, unverified pricing and cutoffs not before question opening", () => {
