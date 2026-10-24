@@ -1,6 +1,6 @@
 /**
  * forecast POST {runId, questionId, arm, requestKey}
- *   -> {runId, itemId, attemptId, status, armPrediction, claimDecisions, usageStatus}
+ *   -> {runId, itemId, attemptId, status, reasonCode, retryNotBefore, armPrediction, withheldProbability, claimDecisions, usageStatus}
  *
  * Processes exactly ONE model arm/stage for one frozen run item (PLAN.md s.4). At most one bounded
  * provider call per invocation; no multi-call chain, no sleeps, no hidden SDK retries. The browser

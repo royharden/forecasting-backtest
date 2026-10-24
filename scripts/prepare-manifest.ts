@@ -177,6 +177,8 @@ function main(): void {
     const venue = text(row, "venue");
     const provenance = text(row, "provenance", "source");
     if (venue == null || provenance == null) reject(where, "Missing venue or provenance for this price; no provenance was assumed.");
+    if (questionId == null) reject(where, "Missing question_id for this price.");
+    if (observedAt == null && (row.observed_at ?? row.timestamp ?? row.observedAt) == null) reject(where, "Missing observed_at for this price.");
     if (questionId == null || observedAt == null || p == null || venue == null || provenance == null) return [];
     return [
       {
