@@ -190,6 +190,13 @@ describe("critic", () => {
     expect(evaluateOutput(out([{ text: "x", evidenceId: "a", start: 0, end: 1, contentHash: "h" }]), "no_research", [], [], len)).toMatchObject({ status: "failed", code: "schema_invalid" });
   });
 
+  it("turns oversized untrusted claim fields into a recorded schema failure", () => {
+    const long = { text: "x".repeat(4001), evidenceId: "a", start: 0, end: 1, contentHash: a.excerptHash };
+    expect(evaluateOutput(out([long]), "research", gate.promptEvidence, gate.ledger, len)).toMatchObject({ status: "failed", code: "schema_invalid" });
+    const ref = { text: "x", evidenceId: "e".repeat(201), start: 0, end: 1, contentHash: a.excerptHash };
+    expect(evaluateOutput(out([ref]), "research", gate.promptEvidence, gate.ledger, len)).toMatchObject({ status: "failed", code: "schema_invalid" });
+  });
+
   it("rejects p outside [0,1] and nonfinite values instead of clamping", () => {
     expect(evaluateOutput(out([], 1.01), "no_research", [], [], len)).toMatchObject({ status: "failed" });
     expect(evaluateOutput('{"probability":"0.5","rationale":"","claims":[]}', "no_research", [], [], len)).toMatchObject({ status: "failed" });

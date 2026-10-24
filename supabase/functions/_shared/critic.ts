@@ -11,6 +11,9 @@ import type { PromptEvidence, SourceDecision } from "./evidence.ts";
 import { LIMITS, type ModelArm } from "./manifest.ts";
 import type { StructuralCode, StructuralFeedback } from "./prompt.ts";
 
+export const CLAIM_TEXT_MAX = 4000;
+export const CLAIM_REF_MAX = 200;
+
 export type ModelClaim = { text: string; evidenceId: string; start: number; end: number; contentHash: string };
 
 export type ParsedOutput = { probability: number; rationale: string; claims: ModelClaim[] };
@@ -72,6 +75,11 @@ export function parseModelOutput(text: string, arm: ModelArm): { ok: true; value
       typeof c.contentHash !== "string"
     ) {
       return { ok: false, code: "schema_invalid", detail: "Each claim needs text, evidenceId, start, end and contentHash." };
+    }
+    // Bounds match the database checks so an oversized untrusted value is a recorded schema failure,
+    // never a write error after a paid call.
+    if (c.text.length > CLAIM_TEXT_MAX || c.evidenceId.length > CLAIM_REF_MAX || c.contentHash.length > CLAIM_REF_MAX || !Number.isFinite(c.start) || !Number.isFinite(c.end)) {
+      return { ok: false, code: "schema_invalid", detail: `Claim text must be <= ${CLAIM_TEXT_MAX} characters and references <= ${CLAIM_REF_MAX}.` };
     }
     claims.push({ text: c.text, evidenceId: c.evidenceId, start: c.start, end: c.end, contentHash: c.contentHash });
   }

@@ -1,70 +1,39 @@
 import { useEffect, useMemo, useState } from "react";
-import type { ModelArm, QuestionRecord, StudySet } from "../supabase/functions/_shared/engine.ts";
-import { runBacktest } from "../supabase/functions/_shared/engine.ts";
+import {
+  appendVerdict,
+  buildBundle,
+  createAuditSample,
+  importManifest,
+  importManifestText,
+  LIMITS,
+  type ImportIssue,
+  type ImportResult,
+} from "../supabase/functions/_shared/engine.ts";
+import { AccountPanel } from "./components/AccountPanel";
+import { AttemptInspector } from "./components/AttemptInspector";
+import { AuditPanel } from "./components/AuditPanel";
 import { AuthBar } from "./components/AuthBar";
+import { BundlePanel } from "./components/BundlePanel";
+import { EvidencePanel } from "./components/EvidencePanel";
+import { ProtocolCard } from "./components/ProtocolCard";
 import { Scoreboard } from "./components/Scoreboard";
 import { Workshop } from "./components/Workshop";
-import { demoStudy } from "./lib/demoPack";
-import { isUuid, messageOf } from "./lib/labels";
-import { requestLiveForecast } from "./lib/liveForecast";
 import { readPublicConfig } from "./lib/config";
-import {
-  createEmptySet,
-  deleteSet,
-  deleteClaim,
-  deleteSource,
-  insertClaim,
-  insertForecast,
-  insertQuestion,
-  insertRun,
-  insertSource,
-  listRuns,
-  listSets,
-  loadSet,
-  renameSet,
-  saveStudyCopy,
-  updateQuestion,
-  type RunSummary,
-  type SetSummary,
-} from "./lib/repository";
-import {
-  blankClaim,
-  blankQuestion,
-  blankSource,
-  patchQuestion,
-  recordedForecast,
-  withoutClaim,
-  withoutSource,
-} from "./lib/studyEdit";
+import { harborManifestValue } from "./lib/demoPack";
+import { messageOf, shortHash } from "./lib/labels";
+import { appendAuditVerdictRemote, createAuditSampleRemote } from "./lib/repository";
+import { downloadJson, nowUtc, readFileText, runRecordedReplay, type LoadedDataset, type RunRecord } from "./lib/session";
 import { getSupabase } from "./lib/supabaseClient";
-
-const initial = demoStudy();
 
 export function App() {
   const configured = readPublicConfig() != null;
   const [email, setEmail] = useState<string | null>(null);
-  const [study, setStudy] = useState<StudySet>(initial);
-  const [selectedId, setSelectedId] = useState(initial.questions[0]?.id ?? "");
-  const [sets, setSets] = useState<SetSummary[]>([]);
-  const [runs, setRuns] = useState<RunSummary[]>([]);
+  const [dataset, setDataset] = useState<LoadedDataset | null>(null);
+  const [runs, setRuns] = useState<RunRecord[]>([]);
+  const [activeRunId, setActiveRunId] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string>("");
   const [banner, setBanner] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [hideMemoryRisk, setHideMemoryRisk] = useState(false);
-  const account = email != null && isUuid(study.id);
-
-  const fullReport = useMemo(() => runBacktest(study), [study]);
-  const report = useMemo(() => {
-    if (!hideMemoryRisk) return fullReport;
-    const hidden = new Set(
-      fullReport.questions
-        .filter((question) => question.flags.some((flag) => flag.code === "model_memory_risk"))
-        .map((question) => question.questionId),
-    );
-    return runBacktest({
-      ...study,
-      questions: study.questions.filter((question) => !hidden.has(question.id)),
-    });
-  }, [study, hideMemoryRisk, fullReport]);
 
   useEffect(() => {
     const supabase = getSupabase();
@@ -73,63 +42,43 @@ export function App() {
     void supabase.auth.getSession().then(({ data }) => {
       if (active) setEmail(data.session?.user.email ?? null);
     });
-    const { data } = supabase.auth.onAuthStateChange((_event, session) => {
-      setEmail(session?.user.email ?? null);
-    });
+    const { data } = supabase.auth.onAuthStateChange((_event, session) => setEmail(session?.user.email ?? null));
     return () => {
       active = false;
       data.subscription.unsubscribe();
     };
   }, []);
 
-  useEffect(() => {
-    if (email != null || !isUuid(study.id)) return;
-    const demo = demoStudy();
-    setStudy(demo);
-    setSelectedId(demo.questions[0]?.id ?? "");
-    setRuns([]);
-  }, [email, study.id]);
+  const datasetRuns = useMemo(() => runs.filter((r) => r.manifest.datasetVersionHash === dataset?.version.versionHash), [runs, dataset]);
+  const activeRun = datasetRuns.find((r) => r.manifest.runId === activeRunId) ?? null;
+  const questions = dataset?.version.questions ?? [];
+  const selected = questions.find((q) => q.id === selectedId) ?? questions.find((q) => q.role === "evaluation") ?? null;
+  const selectedExecution = activeRun?.execution.items.find((i) => i.questionId === selected?.id) ?? null;
 
-  useEffect(() => {
-    if (email == null) {
-      setSets([]);
-      return;
-    }
-    let active = true;
-    void listSets()
-      .then((rows) => {
-        if (active) setSets(rows);
-      })
-      .catch((error: unknown) => {
-        if (active) setBanner(messageOf(error));
-      });
-    return () => {
-      active = false;
-    };
-  }, [email]);
+  function adopt(result: ImportResult, source: LoadedDataset["source"], storedVersionId: string | null = null): ImportIssue[] | null {
+    if (!result.ok) return result.errors;
+    setDataset({ version: result.version, recordings: result.recordings, recordingsHash: result.recordingsHash, source, warnings: result.warnings, storedVersionId });
+    setSelectedId(result.version.questions.find((q) => q.role === "evaluation")?.id ?? "");
+    setActiveRunId(null);
+    setBanner(null);
+    return null;
+  }
 
-  useEffect(() => {
-    if (email == null || !isUuid(study.id)) {
-      setRuns([]);
-      return;
-    }
-    let active = true;
-    void listRuns(study.id)
-      .then((rows) => {
-        if (active) setRuns(rows);
-      })
-      .catch((error: unknown) => {
-        if (active) setBanner(messageOf(error));
-      });
-    return () => {
-      active = false;
-    };
-  }, [email, study.id]);
+  function enterDemo() {
+    const errors = adopt(importManifest(harborManifestValue(), nowUtc()), "demo");
+    if (errors != null) setBanner(`The bundled demo failed validation: ${errors.map((e) => `${e.path} ${e.code}`).join("; ")}`);
+  }
 
-  const selected = study.questions.find((question) => question.id === selectedId) ?? study.questions[0] ?? null;
-  const selectedReport = fullReport.questions.find((question) => question.questionId === selected?.id);
+  function addRun(run: RunRecord) {
+    setRuns((current) => [...current.filter((r) => r.manifest.runId !== run.manifest.runId), run]);
+    setActiveRunId(run.manifest.runId);
+  }
 
-  async function runAction(action: () => Promise<void>) {
+  function patchRun(runId: string, patch: Partial<RunRecord>) {
+    setRuns((current) => current.map((r) => (r.manifest.runId === runId ? { ...r, ...patch } : r)));
+  }
+
+  async function guarded(action: () => Promise<void>) {
     setBusy(true);
     setBanner(null);
     try {
@@ -141,9 +90,10 @@ export function App() {
     }
   }
 
-  function patchSelected(patch: Partial<QuestionRecord>) {
-    if (selected == null) return;
-    setStudy((current) => patchQuestion(current, selected.id, patch));
+  function keptPopulation(run: RunRecord) {
+    return run.execution.items.flatMap((item) =>
+      item.gate.ledger.filter((d) => d.decision === "kept").map((d) => ({ questionId: d.questionId, evidenceId: d.evidenceId })),
+    );
   }
 
   return (
@@ -151,7 +101,8 @@ export function App() {
       <header className="topbar">
         <h1>Forecasting backtest</h1>
         <p className="lede">
-          Score resolved yes/no questions as of a cutoff. Undated claims are rejected. The market price at that cutoff is the bar.
+          A supplied-evidence backtest for already resolved yes/no questions. It compares a researched forecast with no-research, market-as-of, training base-rate and
+          always-0.5 arms under a frozen cutoff protocol. No trading, no live questions, no investment advice. Retrieval from the web is not implemented.
         </p>
       </header>
       <AuthBar configured={configured} email={email} />
@@ -160,255 +111,164 @@ export function App() {
           {banner}
         </p>
       ) : null}
-      <div className="panel toolbar">
+
+      <section className="panel toolbar" aria-label="Load data">
+        <button type="button" disabled={busy} onClick={enterDemo}>
+          Enter synthetic demo
+        </button>
         <label>
-          Study set
-          <select
-            value={isUuid(study.id) ? study.id : "demo"}
-            onChange={(event) => {
-              const value = event.target.value;
-              if (value === "demo") {
-                const demo = demoStudy();
-                setStudy(demo);
-                setSelectedId(demo.questions[0]?.id ?? "");
-                return;
-              }
-              void runAction(async () => {
-                const loaded = await loadSet(value);
-                setStudy(loaded);
-                setSelectedId(loaded.questions[0]?.id ?? "");
-              });
-            }}
-          >
-            <option value="demo">Browser demo</option>
-            {sets.map((item) => (
-              <option key={item.id} value={item.id}>
-                {item.name}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          Name
+          Import manifest v1 (JSON, ≤ 1 MiB)
           <input
-            value={study.name}
-            onChange={(event) => setStudy((current) => ({ ...current, name: event.target.value }))}
-            onBlur={() => {
-              if (!account || study.name.trim() === "") return;
-              void runAction(() => renameSet(study.id, study.name.trim()));
+            type="file"
+            accept="application/json,.json"
+            disabled={busy}
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              event.target.value = "";
+              if (file == null) return;
+              void guarded(async () => {
+                const text = await readFileText(file, LIMITS.importBytes);
+                const errors = adopt(importManifestText(text, nowUtc()), "import");
+                if (errors != null) throw new Error(`Import failed; nothing was loaded. ${errors.slice(0, 8).map((e) => `${e.path} ${e.code}: ${e.message}`).join(" | ")}`);
+              });
             }}
           />
         </label>
-        <button
-          type="button"
-          disabled={busy || email == null || isUuid(study.id)}
-          onClick={() =>
-            void runAction(async () => {
-              const saved = await saveStudyCopy(study);
-              setStudy(saved);
-              setSelectedId(saved.questions[0]?.id ?? "");
-              setSets(await listSets());
-              setBanner("Stored a copy on your account.");
-            })
-          }
-        >
-          Store this set
-        </button>
-        <button
-          type="button"
-          className="quiet"
-          disabled={busy || email == null}
-          onClick={() =>
-            void runAction(async () => {
-              const created = await createEmptySet("Untitled study");
-              setStudy(created);
-              setSelectedId("");
-              setSets(await listSets());
-            })
-          }
-        >
-          New empty set
-        </button>
-        <button
-          type="button"
-          className="quiet"
-          disabled={busy || isUuid(study.id)}
-          onClick={() => {
-            const demo = demoStudy();
-            setStudy(demo);
-            setSelectedId(demo.questions[0]?.id ?? "");
-          }}
-        >
-          Reload demo
-        </button>
-        <button
-          type="button"
-          className="quiet"
-          disabled={busy || !account}
-          onClick={() => {
-            if (!window.confirm("Delete this stored study set?")) return;
-            void runAction(async () => {
-              await deleteSet(study.id);
-              const demo = demoStudy();
-              setStudy(demo);
-              setSelectedId(demo.questions[0]?.id ?? "");
-              setSets(await listSets());
-            });
-          }}
-        >
-          Delete stored set
-        </button>
-      </div>
-      <div className="layout">
-        <aside className="panel">
-          <h2>Questions</h2>
-          <button
-            type="button"
-            disabled={busy}
-            onClick={() => {
-              const draft = blankQuestion(study.id);
-              void runAction(async () => {
-                if (account) {
-                  const saved = await insertQuestion(draft);
-                  setStudy((current) => ({ ...current, questions: [...current.questions, saved] }));
-                  setSelectedId(saved.id);
-                  return;
-                }
-                setStudy((current) => ({ ...current, questions: [...current.questions, draft] }));
-                setSelectedId(draft.id);
-              });
-            }}
-          >
-            Add question
-          </button>
-          <div className="question-list">
-            {study.questions.map((question) => (
-              <button
-                type="button"
-                key={question.id}
-                aria-current={question.id === selected?.id ? "true" : undefined}
-                onClick={() => setSelectedId(question.id)}
-              >
-                {question.prompt}
-              </button>
-            ))}
+        <p className="note">
+          {configured && email != null
+            ? "Signed in: use the account panel to store versions and runs privately."
+            : "Browser session only: loaded data and runs last for this page session and are gone on reload."}
+        </p>
+      </section>
+
+      {dataset != null ? (
+        <>
+          <ProtocolCard version={dataset.version} warnings={dataset.warnings} source={dataset.source} />
+          <div className="layout">
+            <aside className="panel" aria-label="Questions">
+              <h2>Questions</h2>
+              <div className="question-list">
+                {questions.map((q) => (
+                  <button type="button" key={q.id} aria-current={q.id === selected?.id ? "true" : undefined} onClick={() => setSelectedId(q.id)}>
+                    <strong>{q.id}</strong> {q.role === "training" ? "(training)" : ""} {q.status === "quarantined" ? "(quarantined)" : ""}
+                    <br />
+                    <small>{q.questionTextAsOf}</small>
+                  </button>
+                ))}
+              </div>
+            </aside>
+            <div>
+              {selected != null && selected.role === "evaluation" ? <EvidencePanel version={dataset.version} question={selected} /> : null}
+              {selected != null && selected.role === "training" ? (
+                <section className="panel">
+                  <h2>Training item {selected.id}</h2>
+                  <p className="note">
+                    Training items feed only the base rate: category {selected.category}, cluster {selected.eventClusterId}, resolved {selected.resolvedAt}.
+                  </p>
+                </section>
+              ) : null}
+
+              <section className="panel" aria-labelledby="runs-heading">
+                <h2 id="runs-heading">Runs</h2>
+                <p className="note">
+                  Recorded replay runs the stored outputs through the same gate, critic, correction and audit rules. It has no model call path; a missing recording is a replay
+                  miss.
+                </p>
+                <button
+                  type="button"
+                  disabled={busy || dataset.recordings.length === 0}
+                  onClick={() => {
+                    const result = runRecordedReplay(dataset);
+                    if (!result.ok) setBanner(result.message);
+                    else addRun(result.run);
+                  }}
+                >
+                  Run recorded replay
+                </button>
+                {dataset.recordings.length === 0 ? <span className="note"> This dataset has no recorded attempts.</span> : null}
+                {datasetRuns.length > 0 ? (
+                  <ul>
+                    {datasetRuns.map((r) => (
+                      <li key={r.manifest.runId}>
+                        <button type="button" className="linkish" aria-current={r.manifest.runId === activeRunId ? "true" : undefined} onClick={() => setActiveRunId(r.manifest.runId)}>
+                          {r.manifest.mode} run {r.manifest.runId.slice(0, 8)} · {r.manifest.createdAt} · metrics {shortHash(r.report.metricsHash)}
+                          {r.storedRunId != null ? " · stored" : " · page session only"}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+              </section>
+
+              <AccountPanel configured={configured} signedIn={email != null} dataset={dataset} busy={busy} guarded={guarded} onDatasetStored={setDataset} onRun={addRun} />
+
+              {activeRun != null ? (
+                <>
+                  <Scoreboard report={activeRun.report} onSelect={setSelectedId} />
+                  {selectedExecution != null && selected != null ? (
+                    <AttemptInspector manifest={activeRun.manifest} execution={selectedExecution} questionOpensAt={selected.opensAt} />
+                  ) : (
+                    <p className="panel note">Select an eligible evaluation question to inspect its model arms.</p>
+                  )}
+                  <AuditPanel
+                    version={dataset.version}
+                    sample={activeRun.auditSample}
+                    editions={activeRun.editions}
+                    busy={busy}
+                    onCreate={(requestedN, seed) =>
+                      void guarded(async () => {
+                        const sample =
+                          activeRun.storedRunId != null
+                            ? await createAuditSampleRemote(activeRun.storedRunId, dataset.version.versionHash, requestedN, seed, activeRun.execution)
+                            : createAuditSample(activeRun.manifest.runId, dataset.version.versionHash, keptPopulation(activeRun), requestedN, seed);
+                        patchRun(activeRun.manifest.runId, { auditSample: sample, editions: [] });
+                      })
+                    }
+                    onVerdict={(sampleItemId, verdict, notes) =>
+                      void guarded(async () => {
+                        const sample = activeRun.auditSample;
+                        if (sample == null) return;
+                        const latest = activeRun.editions.filter((e) => e.sampleItemId === sampleItemId).sort((a, b) => b.edition - a.edition)[0];
+                        if (activeRun.storedRunId != null) {
+                          const editions = await appendAuditVerdictRemote(sample, sampleItemId, verdict, notes, latest?.editionId ?? null);
+                          patchRun(activeRun.manifest.runId, { editions });
+                          return;
+                        }
+                        const result = appendVerdict(sample, activeRun.editions, {
+                          sampleItemId,
+                          verdict,
+                          notes,
+                          supersedesId: latest?.editionId ?? null,
+                          createdAt: nowUtc(),
+                          editionId: crypto.randomUUID(),
+                        });
+                        if (!result.ok) throw new Error(`Verdict not appended: ${result.code}`);
+                        patchRun(activeRun.manifest.runId, { editions: result.editions });
+                      })
+                    }
+                  />
+                </>
+              ) : null}
+            </div>
           </div>
-        </aside>
-        <div>
-          <Scoreboard
-            study={study}
-            report={report}
-            hideMemoryRisk={hideMemoryRisk}
-            onToggleMemoryRisk={setHideMemoryRisk}
-            onSelect={setSelectedId}
-          />
-          {selected == null ? (
-            <p className="panel">This set has no questions yet.</p>
-          ) : (
-            <Workshop
-              study={study}
-              question={selected}
-              report={selectedReport}
-              account={account}
-              busy={busy}
-              onPatch={patchSelected}
-              onStoreQuestion={() => {
-                if (selected == null) return;
-                const current = study.questions.find((question) => question.id === selected.id);
-                if (current == null) return;
-                void runAction(() => updateQuestion(current));
-              }}
-              onAddSource={(input) => {
-                const source = {
-                  ...blankSource(selected.id),
-                  title: input.title,
-                  url: input.url,
-                  publishedAt: input.publishedAt === "" ? null : input.publishedAt,
-                  body: input.body,
-                };
-                void runAction(async () => {
-                  if (account) {
-                    const saved = await insertSource(source);
-                    setStudy((current) => ({ ...current, sources: [...current.sources, saved] }));
-                    return;
-                  }
-                  setStudy((current) => ({ ...current, sources: [...current.sources, source] }));
-                });
-              }}
-              onDeleteSource={(sourceId) =>
-                void runAction(async () => {
-                  if (account) await deleteSource(sourceId);
-                  setStudy((current) => withoutSource(current, sourceId));
-                })
-              }
-              onAddClaim={(text, sourceId) => {
-                const claim = { ...blankClaim(selected.id, sourceId), text };
-                void runAction(async () => {
-                  if (account) {
-                    const saved = await insertClaim(claim);
-                    setStudy((current) => ({ ...current, claims: [...current.claims, saved] }));
-                    return;
-                  }
-                  setStudy((current) => ({ ...current, claims: [...current.claims, claim] }));
-                });
-              }}
-              onDeleteClaim={(claimId) =>
-                void runAction(async () => {
-                  if (account) await deleteClaim(claimId);
-                  setStudy((current) => withoutClaim(current, claimId));
-                })
-              }
-              onStoreRecorded={(arm: ModelArm, probability: number, rationale: string) => {
-                const claimIds = study.claims.filter((claim) => claim.questionId === selected.id).map((claim) => claim.id);
-                const forecast = recordedForecast({ questionId: selected.id, arm, probability, rationale, claimIds });
-                void runAction(async () => {
-                  if (account) {
-                    const saved = await insertForecast(forecast);
-                    setStudy((current) => ({ ...current, forecasts: [...current.forecasts, saved] }));
-                    return;
-                  }
-                  setStudy((current) => ({ ...current, forecasts: [...current.forecasts, forecast] }));
-                });
-              }}
-              onLive={(arm) =>
-                void runAction(async () => {
-                  const result = await requestLiveForecast(selected.id, arm);
-                  setStudy((current) => ({
-                    ...current,
-                    claims: [...current.claims, ...result.claims],
-                    forecasts: [...current.forecasts, result.forecast],
-                  }));
-                  setBanner(result.message);
-                })
-              }
-            />
-          )}
-          <section className="panel">
-            <h2>Saved runs</h2>
-            <button
-              type="button"
-              disabled={busy || !account}
-              onClick={() =>
-                void runAction(async () => {
-                  await insertRun(study.id, `${study.name} ${new Date().toISOString()}`, report);
-                  setRuns(await listRuns(study.id));
-                  setBanner("Saved the current scoreboard. The board itself always recomputes.");
-                })
-              }
-            >
-              Save this scoreboard
-            </button>
-            {runs.length === 0 ? <p className="note">No stored snapshots for this set.</p> : null}
-            <ul>
-              {runs.map((run) => (
-                <li key={run.id}>
-                  {run.label} ({run.createdAt})
-                </li>
-              ))}
-            </ul>
-          </section>
-        </div>
-      </div>
+        </>
+      ) : (
+        <p className="panel note">
+          Choose <strong>Enter synthetic demo</strong> to load six fictional resolved Harbor questions, or import a manifest v1 file. Synthetic results demonstrate arithmetic
+          and control flow only.
+        </p>
+      )}
+
+      <BundlePanel
+        canExport={activeRun != null && dataset != null}
+        onExport={() => {
+          if (activeRun == null || dataset == null) return;
+          const bundle = buildBundle(dataset.version, activeRun.manifest, activeRun.execution, activeRun.report, { sample: activeRun.auditSample, editions: activeRun.editions }, nowUtc());
+          downloadJson(`s14-bundle-${activeRun.manifest.runId.slice(0, 8)}.json`, bundle);
+        }}
+      />
+
+      <Workshop busy={busy} onFreeze={(text) => adopt(importManifestText(text, nowUtc()), "import")} />
     </main>
   );
 }

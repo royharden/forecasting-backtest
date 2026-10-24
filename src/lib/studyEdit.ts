@@ -1,96 +1,79 @@
-import type {
-  ClaimRecord,
-  ForecastRecord,
-  ModelArm,
-  QuestionRecord,
-  SourceRecord,
-  StudySet,
-} from "../../supabase/functions/_shared/engine.ts";
+/**
+ * Draft workshop helpers. A draft is editable manifest v1 JSON; freezing it creates a new immutable
+ * DatasetVersion. Editing a draft never changes an earlier frozen version or run.
+ */
 
-export function patchQuestion(study: StudySet, questionId: string, patch: Partial<QuestionRecord>): StudySet {
-  return {
-    ...study,
-    questions: study.questions.map((question) =>
-      question.id === questionId ? { ...question, ...patch, id: question.id, setId: question.setId } : question,
-    ),
-  };
-}
+import { BLOCKLIST_VERSION, FALLBACK_POLICY, GATE_VERSION, PROMPT_VERSION } from "../../supabase/functions/_shared/engine.ts";
 
-export function blankQuestion(setId: string): QuestionRecord {
-  return {
-    id: crypto.randomUUID(),
-    setId,
-    prompt: "New resolved yes/no question",
-    cutoffAt: "2024-01-01T00:00:00.000Z",
-    resolvedAt: "2024-06-01T00:00:00.000Z",
-    outcome: false,
-    marketPrice: 0.5,
-    resolutionStatement: "Replace this with the outcome sentence.",
-    modelKnowledgeCutoff: null,
-  };
-}
-
-export function blankSource(questionId: string): SourceRecord {
-  return {
-    id: crypto.randomUUID(),
-    questionId,
-    title: "Untitled source",
-    url: "",
-    publishedAt: null,
-    body: "",
-  };
-}
-
-export function blankClaim(questionId: string, sourceId: string | null): ClaimRecord {
-  return {
-    id: crypto.randomUUID(),
-    questionId,
-    text: "",
-    sourceId,
-  };
-}
-
-export function recordedForecast(input: {
-  questionId: string;
-  arm: ModelArm;
-  probability: number;
-  rationale: string;
-  claimIds: string[];
-}): ForecastRecord {
-  return {
-    id: crypto.randomUUID(),
-    questionId: input.questionId,
-    arm: input.arm,
-    probability: input.probability,
-    origin: "recorded",
-    rationale: input.rationale,
-    model: null,
-    claimIds: input.arm === "research" ? input.claimIds : [],
-    status: "scored",
-    withholdReason: null,
-  };
-}
-
-export function withoutSource(study: StudySet, sourceId: string): StudySet {
-  const removedClaims = new Set(study.claims.filter((claim) => claim.sourceId === sourceId).map((claim) => claim.id));
-  return {
-    ...study,
-    sources: study.sources.filter((source) => source.id !== sourceId),
-    claims: study.claims.filter((claim) => claim.sourceId !== sourceId),
-    forecasts: study.forecasts.map((forecast) => ({
-      ...forecast,
-      claimIds: forecast.claimIds.filter((id) => !removedClaims.has(id)),
-    })),
-  };
-}
-
-export function withoutClaim(study: StudySet, claimId: string): StudySet {
-  return {
-    ...study,
-    claims: study.claims.filter((claim) => claim.id !== claimId),
-    forecasts: study.forecasts.map((forecast) => ({
-      ...forecast,
-      claimIds: forecast.claimIds.filter((id) => id !== claimId),
-    })),
-  };
+/** A minimal real-data template: placeholders the owner must replace with permitted historical records. */
+export function blankRealDraft(): string {
+  return JSON.stringify(
+    {
+      schemaVersion: 1,
+      datasetId: "my-dataset",
+      name: "My resolved questions",
+      kind: "real",
+      provenance: "Describe where each record came from (owner-obtained venue export, archive captures).",
+      rights: "State the licence or permission for every excerpt; private use still needs permission.",
+      protocol: {
+        protocolId: "my-protocol-v1",
+        cutoffPreset: "supplied-fixed-v1",
+        cutoffSelectionNote: "Cutoffs chosen before scoring and frozen together; retrospectively selected.",
+        fallbackPolicy: FALLBACK_POLICY,
+        sourceBufferHours: 24,
+        maxPriceAgeHours: 24,
+        trainMinimum: 10,
+        calibrationBins: 5,
+        maxPromptExcerpts: 8,
+        eligibilityNote: "Resolved binary questions with historical wording proof.",
+        modelProfileVersion: "recorded",
+        promptVersion: PROMPT_VERSION,
+        gateVersion: GATE_VERSION,
+        blocklistVersion: BLOCKLIST_VERSION,
+        bootstrapSeed: 14,
+        bootstrapReplicates: 2000,
+      },
+      questions: [
+        {
+          id: "Q1",
+          role: "evaluation",
+          category: "category",
+          eventClusterId: "cluster-1",
+          questionTextAsOf: "Question wording exactly as it read at the cutoff.",
+          resolutionRulesAsOf: "Resolution rules exactly as they read at the cutoff.",
+          opensAt: "2024-01-01T00:00:00Z",
+          wordingAvailableAt: "2024-01-01T00:00:00Z",
+          wordingVersionProof: "Archive capture ID or venue revision showing this wording existed by then.",
+          cutoffAt: "2024-03-01T00:00:00Z",
+          scheduledCloseAt: null,
+          scheduledCloseProvenance: null,
+          actualCloseAt: null,
+          resolvedAt: "2024-06-01T00:00:00Z",
+          outcome: 1,
+          resolutionAuditText: "Offline resolution sentence for the post-inference tripwire (never sent to a model).",
+        },
+      ],
+      evidence: [
+        {
+          id: "E1",
+          questionId: "Q1",
+          title: "Source title",
+          url: "https://example.org/article",
+          published: { precision: "instant", at: "2024-02-20T12:00:00Z" },
+          retrievedAt: "2024-02-21T00:00:00Z",
+          versionAvailableAt: "2024-02-20T12:00:00Z",
+          versionProof: "Archive capture ID showing this exact text by the evidence cutoff.",
+          updatedAt: null,
+          excerpt: "Exact permitted excerpt text.",
+          rightsNote: "Licence or permission for this excerpt.",
+        },
+      ],
+      marketObservations: [
+        { id: "M1", questionId: "Q1", yesProbability: 0.5, observedAt: "2024-02-29T12:00:00Z", venue: "Venue name", provenance: "Owner export file and row" },
+      ],
+      recordedAttempts: [],
+    },
+    null,
+    2,
+  );
 }

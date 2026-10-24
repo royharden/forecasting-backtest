@@ -1,120 +1,169 @@
-import type { ClaimRecord, ForecastRecord, ModelArm } from "../../supabase/functions/_shared/engine.ts";
+/**
+ * Browser driver for account runs (replay or live). It freezes a run, then calls the forecast
+ * function once per arm stage while the page is open: no-research to a terminal state first, then
+ * research. Closing the page pauses new work (one in-flight provider call may still finish).
+ * Written under Dirty Mode; never executed against a deployed function.
+ */
+
+import type { ModelArm, ModelProfile, RunManifest, RunMode } from "../../supabase/functions/_shared/engine.ts";
 import { readPublicConfig } from "./config";
+import { finalizeRunRemote, freezeRunRemote, loadStoredRun } from "./repository";
+import type { LoadedDataset, RunRecord } from "./session";
 import { getSupabase } from "./supabaseClient";
 
-export type LiveForecastResponse = {
-  forecast: ForecastRecord;
-  claims: ClaimRecord[];
-  message: string;
+export type ForecastResponse = {
+  runId: string;
+  itemId: string;
+  attemptId: string | null;
+  status: "pending" | "leased" | "done" | "withheld" | "failed" | "skipped";
+  reasonCode: string | null;
+  retryNotBefore: string | null;
+  armPrediction: number | null;
+  usageStatus: string;
 };
 
-export async function requestLiveForecast(questionId: string, arm: ModelArm): Promise<LiveForecastResponse> {
+export class ForecastHttpError extends Error {
+  constructor(
+    readonly status: number,
+    readonly code: string,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+const TERMINAL = new Set(["done", "withheld", "failed", "skipped"]);
+const MAX_WAIT_MS = 300_000;
+
+async function callForecast(runId: string, questionId: string, arm: ModelArm): Promise<ForecastResponse> {
   const config = readPublicConfig();
   const supabase = getSupabase();
-  if (config == null || supabase == null) {
-    throw new Error("Add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY before calling the forecast function.");
-  }
+  if (config == null || supabase == null) throw new Error("Add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY first.");
   const { data, error } = await supabase.auth.getSession();
   if (error != null) throw new Error(error.message);
   const token = data.session?.access_token;
-  if (token == null) throw new Error("Sign in before asking for a live forecast.");
-
+  if (token == null) throw new Error("Sign in first.");
   let response: Response;
   try {
     response = await fetch(`${config.url}/functions/v1/forecast`, {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        apikey: config.anonKey,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ questionId, arm }),
+      headers: { Authorization: `Bearer ${token}`, apikey: config.anonKey, "Content-Type": "application/json" },
+      // A fresh request key per call; a permitted retry is a new key and a new slot.
+      body: JSON.stringify({ runId, questionId, arm, requestKey: crypto.randomUUID() }),
     });
   } catch (cause) {
-    const detail = cause instanceof Error ? cause.message : "network error";
-    throw new Error(`The forecast function could not be reached (${detail}).`);
+    throw new ForecastHttpError(0, "network", `The forecast function could not be reached (${cause instanceof Error ? cause.message : "network error"}).`);
   }
-
-  const payload: unknown = await response.json().catch(() => null);
+  const payload = (await response.json().catch(() => null)) as Record<string, unknown> | null;
   if (!response.ok) {
-    const message =
-      payload != null &&
-      typeof payload === "object" &&
-      "message" in payload &&
-      typeof payload.message === "string" &&
-      payload.message.trim() !== ""
-        ? payload.message
-        : `The forecast function returned HTTP ${response.status}. No probability was stored.`;
-    throw new Error(message);
+    throw new ForecastHttpError(response.status, String(payload?.error ?? "error"), String(payload?.message ?? `HTTP ${response.status}`));
   }
-  return readLiveForecastResponse(payload);
+  return payload as unknown as ForecastResponse;
 }
 
-export function readLiveForecastResponse(value: unknown): LiveForecastResponse {
-  if (value == null || typeof value !== "object") {
-    throw new Error("The forecast function returned an unexpected body. No probability was filled in.");
-  }
-  const record = value as Record<string, unknown>;
-  const forecast = readForecast(record.forecast);
-  if (!Array.isArray(record.claims)) {
-    throw new Error("The forecast function returned no claim list. No probability was filled in.");
-  }
-  const claims = record.claims.map(readClaim);
-  const message = typeof record.message === "string" && record.message.trim() !== "" ? record.message : "Live forecast stored.";
-  return { forecast, claims, message };
+function sleep(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) return reject(new Error("Paused."));
+    const timer = setTimeout(resolve, ms);
+    signal.addEventListener("abort", () => {
+      clearTimeout(timer);
+      reject(new Error("Paused."));
+    });
+  });
 }
 
-function readForecast(value: unknown): ForecastRecord {
-  if (value == null || typeof value !== "object") {
-    throw new Error("The forecast function returned no forecast.");
+/** Drive one arm to a terminal state, honoring persisted retry_not_before, leases and 409 in_progress. */
+async function driveArm(runId: string, questionId: string, arm: ModelArm, signal: AbortSignal): Promise<ForecastResponse> {
+  for (let guard = 0; guard < 40; guard += 1) {
+    if (signal.aborted) throw new Error("Paused.");
+    try {
+      const result = await callForecast(runId, questionId, arm);
+      if (TERMINAL.has(result.status)) return result;
+      // pending: wait for the persisted retry time; leased by another request: give its bounded call time.
+      const wait =
+        result.retryNotBefore != null
+          ? Math.min(MAX_WAIT_MS, Math.max(0, Date.parse(result.retryNotBefore) - Date.now()))
+          : result.status === "leased"
+            ? 10_000
+            : 0;
+      await sleep(wait + 250, signal);
+    } catch (error) {
+      if (error instanceof ForecastHttpError && error.code === "in_progress") {
+        await sleep(10_000, signal);
+        continue;
+      }
+      throw error;
+    }
   }
-  const row = value as Record<string, unknown>;
-  if (typeof row.id !== "string" || typeof row.questionId !== "string") {
-    throw new Error("The forecast function returned an incomplete forecast.");
-  }
-  if (row.arm !== "no_research" && row.arm !== "research") {
-    throw new Error("The forecast function returned an unknown arm.");
-  }
-  if (typeof row.probability !== "number" || !Number.isFinite(row.probability)) {
-    throw new Error("The forecast function did not return a numeric probability.");
-  }
-  if (row.origin !== "live") throw new Error("The forecast function returned a forecast that is not marked live.");
-  if (typeof row.rationale !== "string") throw new Error("The forecast function returned no rationale.");
-  if (row.status !== "scored" && row.status !== "withheld") {
-    throw new Error("The forecast function returned an unknown status.");
-  }
-  if (!Array.isArray(row.claimIds) || row.claimIds.some((id) => typeof id !== "string")) {
-    throw new Error("The forecast function returned an invalid claim list.");
-  }
-  return {
-    id: row.id,
-    questionId: row.questionId,
-    arm: row.arm,
-    probability: row.probability,
-    origin: "live",
-    rationale: row.rationale,
-    model: typeof row.model === "string" ? row.model : null,
-    claimIds: row.claimIds as string[],
-    status: row.status,
-    withholdReason: typeof row.withholdReason === "string" ? row.withholdReason : null,
-  };
+  throw new Error(`${questionId}/${arm} did not reach a terminal state; the run stays processing and can be resumed.`);
 }
 
-function readClaim(value: unknown): ClaimRecord {
-  if (value == null || typeof value !== "object") {
-    throw new Error("The forecast function returned a claim that is not an object.");
+export type RunProgress = (message: string) => void;
+
+const STOP_CODES = new Set(["budget_exhausted", "configuration_required", "manifest_or_config_mismatch"]);
+
+type PassOutcome = { stopped: string | null; paused: boolean };
+
+/**
+ * Drive every non-terminal arm of a frozen run, no-research before research per question. Budget
+ * or configuration stops end the pass. Nothing is invented for missing arms.
+ */
+async function driveRun(
+  manifest: RunManifest,
+  isPending: (questionId: string, arm: ModelArm) => boolean,
+  onProgress: RunProgress,
+  signal: AbortSignal,
+): Promise<PassOutcome> {
+  for (const questionId of manifest.evaluationIds) {
+    for (const arm of ["no_research", "research"] as const) {
+      if (!isPending(questionId, arm)) continue;
+      onProgress(`${questionId} · ${arm}`);
+      try {
+        const result = await driveArm(manifest.runId, questionId, arm, signal);
+        onProgress(`${questionId} · ${arm}: ${result.status}${result.reasonCode ? ` (${result.reasonCode})` : ""}`);
+      } catch (error) {
+        if (signal.aborted) return { stopped: null, paused: true };
+        if (error instanceof ForecastHttpError && STOP_CODES.has(error.code)) return { stopped: `${error.code}: ${error.message}`, paused: false };
+        throw error;
+      }
+    }
   }
-  const row = value as Record<string, unknown>;
-  if (typeof row.id !== "string" || typeof row.questionId !== "string" || typeof row.text !== "string") {
-    throw new Error("The forecast function returned an incomplete claim.");
+  return { stopped: null, paused: false };
+}
+
+/** A pause leaves the run processing (resumable); any completed or stopped pass finalizes it. */
+async function finish(manifest: RunManifest, dataset: LoadedDataset, outcome: PassOutcome, onProgress: RunProgress): Promise<RunRecord> {
+  if (outcome.paused) {
+    onProgress("Paused. The run stays processing; use Resume on the stored run while this page is open.");
+    return loadStoredRun(manifest.runId, dataset);
   }
-  if (row.sourceId != null && typeof row.sourceId !== "string") {
-    throw new Error("The forecast function returned a claim with a bad source id.");
+  const status = await finalizeRunRemote(manifest.runId);
+  onProgress(`Run ${status}${outcome.stopped != null ? ` — stopped: ${outcome.stopped}` : ""}`);
+  return loadStoredRun(manifest.runId, dataset);
+}
+
+/** Freeze a new account run and drive it. */
+export async function runOnAccount(dataset: LoadedDataset, mode: RunMode, profile: ModelProfile | null, onProgress: RunProgress, signal: AbortSignal): Promise<RunRecord> {
+  const manifest = await freezeRunRemote(dataset, mode, profile);
+  return finish(manifest, dataset, await driveRun(manifest, () => true, onProgress, signal), onProgress);
+}
+
+/** Resume a stored processing run with its existing manifest: only arms not yet terminal are driven. */
+export async function resumeOnAccount(runId: string, dataset: LoadedDataset, onProgress: RunProgress, signal: AbortSignal): Promise<RunRecord> {
+  const current = await loadStoredRun(runId, dataset);
+  if (current.execution.status !== "processing" && current.execution.status !== "created") {
+    throw new Error("Only a processing run can resume; a terminal run needs a new linked run.");
   }
-  return {
-    id: row.id,
-    questionId: row.questionId,
-    text: row.text,
-    sourceId: typeof row.sourceId === "string" ? row.sourceId : null,
-  };
+  const pending = new Set(
+    current.execution.items.flatMap((item) =>
+      (["no_research", "research"] as const).filter((arm) => item.arms[arm].state === "pending").map((arm) => `${item.questionId}|${arm}`),
+    ),
+  );
+  return finish(current.manifest, dataset, await driveRun(current.manifest, (q, arm) => pending.has(`${q}|${arm}`), onProgress, signal), onProgress);
+}
+
+/** Close a processing run now: arms that never finished stay missing in a partial report. */
+export async function finalizeAsPartial(runId: string, dataset: LoadedDataset): Promise<RunRecord> {
+  await finalizeRunRemote(runId);
+  return loadStoredRun(runId, dataset);
 }
