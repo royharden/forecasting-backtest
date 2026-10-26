@@ -2,23 +2,23 @@
 
 Product: a **supplied-evidence backtest** for resolved yes/no questions. Retrieval is unavailable (optional M5 not implemented); scores evaluate supplied evidence, not a search service.
 
-This is the single product infrastructure inventory. It was rewritten on 2026-10-23 during a Dirty Mode construction run. Every resource below is **written source only**. None of it has been installed, migrated, deployed, invoked or verified. "Written" never means applied, deployed or verified.
+This is the single product infrastructure inventory. Full-mode local validation started on 2026-10-26. Frontend install/test/type/build, edge typecheck/keyless handler tests, and migrations with synthetic database regressions have run successfully. Deployment and real provider/auth-email behavior remain unverified. Local PostgreSQL uses a synthetic `auth.uid()`/role shim; it does not prove a deployed Supabase gateway or email flow.
 
 ## Target and readiness
 
 - Repository: local git only, branch `main`, no remote. Read the inner repo for the current revision; a hash in this file is not a pin.
 - App root: the inner `forecasting-backtest` folder (repository root).
 - Database: Bolt Database (Supabase Postgres 15+ required: migrations use `ON DELETE SET NULL (column)`).
-- Baseline: unknown/uninspected. The earlier file `20261023150000_study.sql` was never reported applied. Inspect the actual migration ledger before applying anything; a drifted or unknown target needs reconciliation first.
+- Deployment baseline: unknown/uninspected. The earlier file `20261023150000_study.sql` is byte-identical to its original commit. All five migrations apply on fresh local PostgreSQL 17.6. Inspect a future target's actual migration ledger before applying anything; a drifted or unknown target needs reconciliation first.
 - Hosting and publication: prepare only.
 - Bolt action now: **inspect and prepare only** (prompt at the end). Provisioning, secrets, deploy and live enablement are later, separately authorized steps.
-- Status: source complete for PLAN.md M1–M4, runtime unverified. M5 retrieval is not implemented ("retrieval unavailable").
+- Status: M1–M4 source complete; local runtime validation and independent acceptance in progress. M5 retrieval is not implemented ("retrieval unavailable").
 
 | Resource | Written | Applied / deployed | Verified |
 |---|---|---|---|
-| Browser app (Vite/React) | yes | no | no |
-| 4 SQL migrations | yes | no | no |
-| `forecast` edge function | yes | no | no |
+| Browser app (Vite/React) | yes | no deployment | install/type/test/build and keyless browser download/Verify/tamper journey pass locally |
+| 5 SQL migrations | yes | disposable local DB only | full chain and synthetic RLS/replay/audit/Unicode regressions pass |
+| `forecast` edge function | yes | no deployment | Deno check and 4 keyless handler tests pass |
 | Server secrets | names only | no | no |
 | `model_profiles` row / live enablement | no (owner step) | no | no |
 
@@ -26,11 +26,11 @@ This is the single product infrastructure inventory. It was rewritten on 2026-10
 
 | Item | Exact command or name |
 |---|---|
-| Runtime | Node 22.6+ (needed for `--experimental-strip-types`) with npm. No lockfile yet. |
-| Install (later) | `npm install` once to create `package-lock.json`, commit it, then `npm ci`. |
-| Checks (later) | `npm test` (Vitest: `tests/*.test.ts`), `npm run typecheck` (`tsc --noEmit`), `npm run build` (writes `dist/`). None run. |
-| Offline normalizer | `npm run prepare-manifest -- <input.json> <out.json>` (Node type stripping). Not run. |
-| Edge type/bundle check (later) | `deno check supabase/functions/forecast/index.ts` — separate from npm; not run. |
+| Runtime | Node 24.18.0 / npm 11.11.0 validated; Node 22.6+ required for the offline type-stripping command. Committed npm and Deno locks. |
+| Install | `npm ci` (project-local pinned dependency resolution). |
+| Checks | `npm test`, `npm run typecheck`, `npm run build` pass locally. Serial tests can use `--maxWorkers=1 --minWorkers=1` on a busy host. |
+| Offline normalizer | `npm run prepare-manifest -- <input.json> <out.json>`; worked examples checked by `node --experimental-strip-types scripts/validate-normalizer.mjs`. |
+| Edge type/handler checks | `npm exec -- deno check supabase/functions/forecast/index.ts`; `npm exec -- deno test supabase/functions/forecast/handler_test.ts` (keyless, mocked network). Deployed bundling remains pending. |
 | Public env names | `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY` (`src/lib/config.ts`). |
 | Missing public config | The app opens in browser-only mode: synthetic demo, manifest import, replay, export and Verify all work without a database. |
 
@@ -42,13 +42,14 @@ This is the single product infrastructure inventory. It was rewritten on 2026-10
 | 2 | `supabase/migrations/20261024000100_run_versions.sql` | `app_private` schema + `app_private.fail`; frozen `dataset_versions`, `version_questions`, `version_outcomes`, `version_evidence`, `version_prices`, `version_quarantine`, `version_recordings`; `model_profiles`; extends `runs` (dataset_version_id, status, mode, manifest_hash, linked_run_id, finalized_at; set_id nullable); `run_manifests`, `run_items`, `run_prompt_evidence`, `run_arm_attempts`, `run_claim_decisions`; fixes the legacy `claims_owner` policy qualification; forecasts limited to `origin='recorded'` with claim-id validation. RPCs: `finalize_dataset`, `dataset_version_rows_hash`, `freeze_run`, `finalize_run`, `record_prompt_evidence` (service only). | pending |
 | 3 | `supabase/migrations/20261024000200_attempt_limits.sql` | `app_limits` (single row: 50/user/day, 200/app/day, MAX_RUN_USD 1, MAX_USER_DAY_USD 3, MAX_APP_DAY_USD 10, live_enabled false), `usage_counters`, `provider_attempts`. Service-only RPCs: `lease_arm`, `reserve_attempt`, `finalize_attempt`, `finalize_arm_result`. | pending |
 | 4 | `supabase/migrations/20261024000300_audit_reports.sql` | `audit_samples`, `audit_sample_items`, `audit_verdict_editions` (append-only), `report_cache`. RPCs: `create_audit_sample`, `append_audit_verdict`. | pending |
+| 5 | `supabase/migrations/20261026000100_unicode_integrity.sql` | Exact UTF-16 supported-claim span trigger and UTF-16 audit population ordering, including supplementary characters. | local test DB only |
 
-Apply files 2–4 together (file 2's `freeze_run` reads `app_limits` from file 3). Assumes the baseline FK is named `runs_set_id_fkey` and existing `runs` rows (if any) have a same-owner `set_id`.
+Apply files 2–5 together before enabling the app (file 2's `freeze_run` reads `app_limits` from file 3). Assumes the baseline FK is named `runs_set_id_fkey` and existing `runs` rows (if any) have a same-owner `set_id`.
 
 - Access model: RLS on every table; owner-only select through every parent path. Frozen tables have no client write grants; they change only through the RPCs. No anonymous grants.
 - Error contract: RPCs raise MESSAGE = public code with SQLSTATE `PTnnn` (HTTP status): `invalid_input` 400, `invalid_session` 401, `not_found` 404, `frozen_or_mismatch` / `in_progress` / `manifest_or_config_mismatch` 409, `budget_exhausted` 429, `configuration_required` 503.
 - Hash reconciliation: SQL cannot recompute the engine's canonical JSON hashes (jsonb reorders keys). The server stores the engine `version_hash` as a claim plus its own `rows_hash`; the browser recomputes engine hashes when reopening a stored version and in Verify bundle. Single-string hashes (evidence `content_hash`, prompt `excerptHash`) are recomputed in SQL.
-- ID ordering: the engine sorts IDs by UTF-16 code unit, SQL by `COLLATE "C"` (code point). They agree for IDs without supplementary-plane characters or characters at U+E000 and above; keep manifest IDs to that range (ASCII recommended).
+- ID ordering: audit sampling uses an explicit UTF-16 sort key in SQL to match the engine, including supplementary-plane IDs. Run cohort keys are compared as sets. Mixed-Unicode sampling parity and split-surrogate rejection are exercised by the local DB regression.
 - `freeze_run` does not re-check the model allowlist, online-variant or prompt-version rules; the `forecast` function enforces them at every call.
 - `finalize_attempt` permits `unknown -> failed_*` settlement; the charge is kept either way.
 - Provider transient/terminal outcomes are returned by `forecast` as HTTP 200 with the item state and `reasonCode` (`provider_transient`, `provider_terminal`), so the browser loop can continue; the plan's `502` codes are represented by these persisted item states. Configuration, auth, ownership, budget and mismatch refusals keep their HTTP codes.
@@ -88,15 +89,13 @@ Email/password sign-in, sign-up and password recovery are in `src/components/Aut
 
 ## Pending verification (in priority order)
 
-1. `npm install` → lockfile; `npm test`, `npm run typecheck`, `npm run build`. Failures stay failures.
-2. Browser demo journey end to end, including download → Verify bundle and keyboard use.
-3. `deno check` of the function; confirm the bundler includes `../_shared/*.ts`.
-4. Apply migrations 2–4 only on an isolated target after inspecting the baseline; RLS with anon / user A / user B, including same-owner wrong-question references; concurrent counters; stale leases; result tampering; xorshift parity of `create_audit_sample` with `audit.ts`.
-5. Auth recovery redirects; allowed-origin preflight; missing-secret behavior (503 `configuration_required`); browser bundle contains no server credentials.
-6. Only after owner authorization: one bounded live call with a verified profile; check the attempt ledger, conservative unknown billing and exact export reproduction.
+1. Independent acceptance of the local full-mode packages; the original unit/build, browser, normalizer, Deno and disposable-DB checks now have executed results.
+2. On a future authorized Bolt target, inspect its migration ledger and reconcile all five migrations; verify real JWT-to-RLS behavior and deployed bundling of `../_shared/*.ts`. Local database checks use synthetic identities, not a deployed authentication service.
+3. Verify production redirects and password-recovery email, gateway JWT settings, allowed origins and deployed missing-configuration behavior. Local CORS/auth/input guards are covered by keyless handler tests.
+4. Only after owner authorization and verified model metadata: one bounded live call; inspect usage/cost/retry records and export reproduction. No live price/model compatibility or paid-call result is claimed here.
 
 ## Inspect-and-prepare prompt for Bolt (no provisioning)
 
-> Inspect this repository. Do not create or modify databases, apply migrations, deploy functions, set secrets or publish. Report: the Node/npm versions you would use; whether `npm install`, `npm test`, `npm run typecheck` and `npm run build` succeed (run them only if this environment permits installs, and report failures verbatim); whether a Bolt Database is attached and, if so, its applied migration ledger compared with `supabase/migrations/` (four files, in order); and whether `supabase/functions/forecast` bundles with its `../_shared/` imports. Propose, but do not perform, the steps to apply migrations 2–4 and deploy `forecast`.
+> Inspect this repository. Do not create or modify databases, apply migrations, deploy functions, set secrets or publish. Report the Node/npm versions you would use; whether `npm ci`, `npm test`, `npm run typecheck` and `npm run build` succeed (run them only if this environment permits installs, and report failures verbatim); whether a Bolt Database is attached and, if so, its applied migration ledger compared with `supabase/migrations/` (five files, in order); and whether `supabase/functions/forecast` bundles with its `../_shared/` imports. Propose, but do not perform, pending migration reconciliation and deployment of `forecast`.
 
 A prepared prompt is not an action.
