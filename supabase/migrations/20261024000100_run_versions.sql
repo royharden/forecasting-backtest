@@ -1103,7 +1103,7 @@ begin
     perform app_private.fail('invalid_input', 'protocol.fallbackPolicy must be research_else_noResearch_else_half.');
   end if;
   v_buffer := app_private.num(v_protocol, 'sourceBufferHours', '$.protocol');
-  if v_buffer <> case v_kind when 'synthetic' then 0 else 24 end then
+  if v_buffer <> (case v_kind when 'synthetic' then 0 else 24 end) then
     perform app_private.fail('invalid_input', 'A ' || v_kind || ' dataset uses a ' || case v_kind when 'synthetic' then 0 else 24 end || 'h source buffer.');
   end if;
   if app_private.num(v_protocol, 'maxPriceAgeHours', '$.protocol') <> 24 then
@@ -1569,10 +1569,10 @@ begin
       or jsonb_typeof(v_doc -> 'pricing' -> 'maxInputTokensPerByte') is distinct from 'number'
       or jsonb_typeof(v_doc -> 'pricing' -> 'inputUsdPerMTok') is distinct from 'number'
       or jsonb_typeof(v_doc -> 'pricing' -> 'outputUsdPerMTok') is distinct from 'number'
-      or case
+      or (case
         when jsonb_typeof(v_doc -> 'maxOutputTokens') = 'number' then (v_doc ->> 'maxOutputTokens')::numeric not between 1 and 1024
         else true
-      end then
+      end) then
       perform app_private.fail('configuration_required', 'Model profile lacks a declared cutoff source, verified pricing/tokenization or a valid output cap.');
     end if;
     begin
