@@ -29,10 +29,10 @@ describe("RV independent arithmetic vectors — PLAN §3", () => {
     expect(result.reduce((n, b) => n + b.count, 0)).toBe(bins + 1);
   });
   it("what_bug_this_catches: claiming binned Murphy equals raw Brier", () => {
-    // Both forecasts in [0,.2): mean p=.1, mean y=.5. Raw loss .365;
+    // Both forecasts in [0,.2): mean p=.1, mean y=.5. Raw loss .3625;
     // bin replacement loss .41; reliability .16, resolution 0, uncertainty .25.
     const rows = [pair(.05, 0), pair(.15, 1, 1)];
-    expect(brier(rows)).toBeCloseTo(.365, 14);
+    expect(brier(rows)).toBeCloseTo(.3625, 14);
     expect(expectedCalibrationError(rows, 5)).toBeCloseTo(.4, 14);
     expect(murphySplit(rows, 5)).toMatchObject({ resolution: 0, uncertainty: .25 });
     expect(murphySplit(rows, 5)?.reliability).toBeCloseTo(.16, 14);
