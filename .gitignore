@@ -6,3 +6,19 @@ dist/
 *.log
 .DS_Store
 .agent-work/
+
+# Local credentials and generated artifacts
+.creds/
+ArchiveManager-creds.txt
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.zip
+.venv/
+__pycache__/
+.pytest_cache/
+.agent-work/
+coverage/
