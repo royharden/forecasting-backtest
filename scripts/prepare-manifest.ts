@@ -7,7 +7,7 @@
  * loose shape documented in README ("Real-data worked manifest"). Output: manifest v1 plus a
  * diagnostics report on stderr. It never accesses a network, API or credential, never invents
  * historical wording, prices, dates or outcomes, and leaves missing evidence excluded.
- * Written under Dirty Mode; not executed yet.
+ * Validated locally with illustrative fixed/scheduled manifests and malformed date/provenance cases.
  */
 
 import { readFileSync, writeFileSync } from "node:fs";
@@ -45,16 +45,25 @@ function utc(value: unknown, where: string, field: string): string | null {
   if (value == null || value === "") return null;
   if (typeof value === "number" && Number.isFinite(value)) {
     const ms = value > 1e12 ? value : value * 1000;
-    return isoUtc(ms);
+    if (Math.abs(ms) <= 8.64e15) return isoUtc(ms);
+    reject(where, `${field} is outside the supported timestamp range.`);
+    return null;
   }
   if (typeof value !== "string") {
     reject(where, `${field} is not a timestamp.`);
     return null;
   }
   if (parseUtc(value) != null) return value;
-  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?[+-]\d{2}:\d{2}$/.test(value)) {
+  const offset = /^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?[+-](\d{2}):(\d{2})$/.exec(value);
+  if (offset != null) {
+    // Date.parse rolls dates such as February 30 into March. Check the local calendar
+    // and clock before converting the numeric offset, rather than inventing a date.
+    const day = new Date(`${offset[1]}T00:00:00.000Z`);
+    const validDay = !Number.isNaN(day.getTime()) && day.toISOString().startsWith(`${offset[1]}T`);
+    const validClock = Number(offset[2]) < 24 && Number(offset[3]) < 60 && Number(offset[4] ?? 0) < 60
+      && Number(offset[5]) < 24 && Number(offset[6]) < 60;
     const ms = Date.parse(value);
-    if (!Number.isNaN(ms)) return isoUtc(ms);
+    if (validDay && validClock && !Number.isNaN(ms)) return isoUtc(ms);
   }
   reject(where, `${field} "${value}" has no explicit timezone or is invalid; it was not guessed.`);
   return null;

@@ -353,12 +353,12 @@ async function handle(request: Request): Promise<Response> {
   if (text == null) throw new HttpError(400, "invalid_input", "Request body is not valid UTF-8.");
   const body = parseBody(text);
 
-  const user = createClient(supabaseUrl, anonKey, { global: { headers: { Authorization: authHeader } }, auth: { persistSession: false } });
+  const user = createClient(supabaseUrl, anonKey, { global: { headers: { Authorization: authHeader } }, auth: { persistSession: false, autoRefreshToken: false } });
   const { data: userData, error: userError } = await user.auth.getUser();
   if (userError != null || userData.user == null) throw new HttpError(401, "invalid_session", "The session is not valid.");
   const ownerId = userData.user.id;
   // Privileged RPCs run only after JWT and ownership checks; each RPC re-validates its own invariants.
-  const service = createClient(supabaseUrl, serviceKey, { auth: { persistSession: false } });
+  const service = createClient(supabaseUrl, serviceKey, { auth: { persistSession: false, autoRefreshToken: false } });
 
   const loaded = await loadFrozen(user, body);
 
@@ -433,7 +433,8 @@ async function afterLease(
     return json(request, 200, await itemResult(service, body, null, "no_call"));
   }
 
-  const input = buildForecastInput(loaded.question, gate.promptEvidence, body.arm);
+  if (loaded.question.cutoffAt == null) throw new HttpError(409, "frozen_or_mismatch", "Question has no eligible cutoff.");
+  const input = buildForecastInput({ ...loaded.question, cutoffAt: loaded.question.cutoffAt }, gate.promptEvidence, body.arm);
   const messages = buildMessages(input, step.feedback);
   const base = {
     attemptId: crypto.randomUUID(),
@@ -446,7 +447,7 @@ async function afterLease(
     requestKey: body.requestKey,
   };
   const fullLength = (id: string) => loaded.evidence.find((e) => e.id === id)?.excerpt.length ?? null;
-  const record = (fields: Record<string, unknown>, evaluation: AttemptEvaluation, rawText: string | null) => ({
+  const record = (fields: Pick<AttemptRecord, "origin" | "model"> & Partial<AttemptRecord> & Record<string, unknown>, evaluation: AttemptEvaluation, rawText: string | null): AttemptRecord & Record<string, unknown> => ({
     ...base,
     ...fields,
     evaluation,

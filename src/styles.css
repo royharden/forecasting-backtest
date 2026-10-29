@@ -71,13 +71,17 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   border-radius: 8px;
   padding: 0.9rem;
   margin-top: 0.8rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .layout {
   display: grid;
-  grid-template-columns: 240px 1fr;
+  grid-template-columns: 240px minmax(0, 1fr);
   gap: 0.8rem;
 }
+
+.layout > * { min-width: 0; }
 
 .question-list {
   display: flex;
@@ -118,6 +122,7 @@ input, select, textarea {
   border: 1px solid #c9bfae;
   border-radius: 4px;
   padding: 0.35rem 0.45rem;
+  max-width: 100%;
 }
 
 textarea { min-height: 4.5rem; width: min(100%, 42rem); }
@@ -162,6 +167,8 @@ th { font-size: 0.82rem; letter-spacing: 0.02em; }
   background: #fbf7ef;
   border: 1px solid #e4dccb;
   border-radius: 6px;
+  max-width: 100%;
+  height: auto;
 }
 
 .flags { display: flex; flex-wrap: wrap; gap: 0.3rem; margin: 0.4rem 0; }

@@ -1,0 +1,45 @@
+process.env.PLAYWRIGHT_BROWSERS_PATH ??= '0';
+const { chromium } = await import('playwright');
+const { mkdirSync, readFileSync, writeFileSync } = await import('node:fs');
+const { resolve } = await import('node:path');
+const target=process.argv[2] ?? 'http://127.0.0.1:23011';
+if (!/^http:\/\/127\.0\.0\.1:230\d\d\/?$/.test(target)) throw Error('Use an S14 claimed loopback port.');
+const output=resolve('.agent-work/browser');
+mkdirSync(output,{recursive:true});
+const browser = await chromium.launch({headless:true,args:['--disable-gpu','--renderer-process-limit=1']});
+try {
+const page=await browser.newPage();
+const blocked=[], errors=[];
+await page.route('**/*', route => {
+  if (new URL(route.request().url()).origin===new URL(target).origin) return route.continue();
+  blocked.push(route.request().url()); return route.abort();
+});
+page.on('pageerror', error=>errors.push(error.message));
+await page.goto(target, {waitUntil:'domcontentloaded',timeout:120000});
+page.setDefaultTimeout(120000);
+const demo=page.getByRole('button',{name:'Enter synthetic demo',exact:true});
+await demo.focus(); await page.keyboard.press('Enter');
+await page.getByRole('button',{name:'Run recorded replay',exact:true}).click();
+await page.getByRole('button',{name:/^replay run /}).click();
+const text=await page.locator('body').innerText();
+for (const word of ['calibration','page session only','policy','base rate']) if (!text.toLowerCase().includes(word)) throw Error(`Missing journey detail: ${word}`);
+const downloadPromise=page.waitForEvent('download');
+await page.getByRole('button',{name:'Download audit bundle',exact:true}).click();
+const download=await downloadPromise;
+const bundleFile=resolve(output,'bundle.json');
+await download.saveAs(bundleFile);
+const bundle=JSON.parse(readFileSync(bundleFile,'utf8'));
+if (bundle.report.eligibleN !== 6 && bundle.report.items.length !== 6) throw Error('Expected six evaluation rows');
+await page.getByLabel('Verify a bundle file').setInputFiles(bundleFile);
+await page.getByText('Verified: every check recomputes.',{exact:true}).waitFor();
+await page.screenshot({path:resolve(output,'desktop.png'),fullPage:true});
+bundle.report.policy.all.brier+=0.1;
+const tampered=resolve(output,'tampered.json');writeFileSync(tampered,JSON.stringify(bundle));
+await page.getByLabel('Verify a bundle file').setInputFiles(tampered);
+await page.getByText('Mismatch found.',{exact:true}).waitFor();
+await page.setViewportSize({width:390,height:844});
+await page.screenshot({path:resolve(output,'mobile.png'),fullPage:true});
+if (await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+1)) throw Error('Mobile content overflows the document viewport');
+if (errors.length || blocked.length) throw Error(JSON.stringify({errors,blocked}));
+console.log('S14_BROWSER_PASS: keyboard demo, recorded replay, reopen, calibration, download/Verify, tamper rejection; zero external requests or page errors.');
+} finally { await browser.close(); }

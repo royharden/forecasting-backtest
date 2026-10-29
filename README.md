@@ -4,9 +4,9 @@ A **supplied-evidence backtest** workbench for already resolved yes/no questions
 
 It does not trade, forecast open questions, connect wallets or give investment advice. Retrieval from the web is **not implemented**: scores evaluate the evidence you supply, not a search service.
 
-## Status: source complete, nothing has run
+## Status: local full-mode validation
 
-This version was built in Dirty Mode (static construction only) on 2026-10-23. The source for the plan's required milestones M1–M4 is written, and each package passed an independent static review (reviews only read the code). **Nothing has been executed**: no `npm install`, no lockfile, no unit tests, no type check, no build, no browser session, no migration, no deployed function, no model call. The test files under `tests/` were written but never run. Treat every behavior below as intended, not proven. A check that fails later is a failure, not a formality.
+Full-mode validation began on 2026-10-26. A committed npm lockfile installs successfully; the 78 original unit tests, TypeScript check and production build pass. Deno checks the edge function separately, and four keyless handler tests pass. All five migrations apply on disposable PostgreSQL 17.6; the local database regression exercises owner isolation, frozen replay, audit sampling and Unicode claim validation. The headless browser completes keyboard entry, replay, reopen, calibration, download/Verify and tamper rejection with no external requests. Offline worked examples pass. Independent final acceptance is pending. No database or function has been deployed and no real provider call has been made.
 
 ## The no-cost demo
 
@@ -82,18 +82,26 @@ Rejection diagnostics look like `REJECT prices[3]: observed_at "2024-10-19 18:00
 
 Then import the manifest with **Import manifest v1** or paste it into the **Draft workshop**. For a real model comparison you also need recorded outputs (`recordedAttempts`, origin `recorded` or `manual`) or a configured live profile.
 
+### Worked scheduled-midpoint variant (illustrative)
+
+Use the same fictional template with `dataset.cutoffPreset` set to `scheduled-midpoint-v1` and `dataset.cutoffSelectionNote` set to "Historical scheduled midpoint, frozen before scoring; early closes excluded." Remove `cutoff_at`; add question fields `scheduled_close_at: "2024-11-05T00:00:00Z"` and `scheduled_close_source: "Historical venue revision captured at opening"`. These provenance words are placeholders for an actual permitted archive record.
+
+Opening on 1 August and a scheduled close on 5 November give a 96-day scheduled lifetime. The 48-day midpoint is **18 September 2024 00:00Z**, earlier than scheduled close minus three days; the real-data evidence cutoff is **17 September 00:00Z**. Set the illustrative price observation to `2024-09-17T18:00:00-04:00` (22:00Z, two hours before the forecast cutoff), publication to `2024-09-15T09:00:00Z` and archive time to `2024-09-15T12:00:00Z`. Resolution on 20 November never determines the cutoff. A lifetime shorter than seven days or actual close/resolution less than a day after the computed cutoff is excluded. The preset still permits selection and survivor bias.
+
+`node --experimental-strip-types scripts/validate-normalizer.mjs` executes both worked variants and checks that missing retrieval dates and timezone-free price times are rejected. It uses only generated illustrative files in gitignored `.agent-work/normalizer/`; it acquires no real records.
+
 ## Accounts and live forecasts (configured mode)
 
 With `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` set and a signed-in user, the **Account storage** panel stores frozen versions privately (one atomic `finalize_dataset`), runs recorded replay or live runs through the `forecast` function arm by arm while the page is open, and reopens stored runs by recomputing their scores from the frozen rows. Live mode stays disabled until the owner verifies a model profile and enables it (see `BOLT-HANDOFF.md`). Live calls use the existing xAI adapter with server-only `XAI_API_KEY`; no other provider is implemented.
 
 ## Stack
 
-React 19, TypeScript, Vite 6, Vitest 3, supabase-js 2. One pure engine in `supabase/functions/_shared/` (barrel `engine.ts`) is shared by the browser, the Deno edge function and the offline script. Four SQL migrations under `supabase/migrations/`. One Deno edge function, `forecast`.
+React 19, TypeScript, Vite 6, Vitest 3, supabase-js 2. One pure engine in `supabase/functions/_shared/` (barrel `engine.ts`) is shared by the browser, the Deno edge function and the offline script. Five SQL migrations under `supabase/migrations/`. One Deno edge function, `forecast`.
 
-## Later setup (not run)
+## Local setup
 
 ```bash
-npm install          # creates package-lock.json; commit it, then use npm ci
+npm ci              # use the committed package-lock.json
 npm test
 npm run typecheck
 npm run build
@@ -102,12 +110,22 @@ npm run dev          # claim a port with the agent-ports skill first
 
 Copy `.env.example` to `.env.local` only when a real Bolt Database URL and anon key exist. Server secrets go in function settings, never in `VITE_` names. `BOLT-HANDOFF.md` lists migrations, functions, secrets and the pending verification steps.
 
-## What has not run
+Additional local checks (Node 24.18.0 and project-local Deno 2.5.6 were used):
 
-- Dependency install, lockfile, Vitest, `tsc`, Vite build
-- Any browser use of the screens, including the demo journey and bundle verification
-- `deno check` or deployment of `forecast`
-- Migrations, RLS with two users, counters, leases, audit RPCs
+```bash
+npm exec -- deno check supabase/functions/forecast/index.ts
+npm exec -- deno test supabase/functions/forecast/handler_test.ts
+node --experimental-strip-types scripts/validate-normalizer.mjs
+```
+
+`scripts/validate-db.mjs <owned-s14-int-container> <new-s14-database>` creates a fresh disposable database and applies the full migration chain plus synthetic replay/RLS/Unicode regressions. It requires an explicitly owned PostgreSQL container with the test roles `anon`, `authenticated` and `service_role`; it never connects to a remote database or uses credentials. Existing database names are refused by PostgreSQL rather than overwritten.
+
+For the built browser check, install the pinned browser in the project (`PLAYWRIGHT_BROWSERS_PATH=0 npm exec -- playwright install chromium --only-shell`, using your shell's environment syntax), claim an S14 port, start `npm exec -- vite preview --host 127.0.0.1 --port <claimed-port> --strictPort`, then run `node scripts/inspect-browser.mjs http://127.0.0.1:<claimed-port>`. Artifacts stay in gitignored `.agent-work/`. The browser blocks external requests.
+
+## Remaining external verification
+
+- Real Bolt/Supabase provisioning, deployed function bundling and gateway JWT behavior
+- Authenticated deployed persistence and concurrent production workload behavior
 - Auth email/recovery settings
 - Any real model response
 
